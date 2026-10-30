@@ -99,7 +99,7 @@ export async function getReport(req, res) {
     }
 
     // Users can only view their own reports, admins can view all
-    if (!req.user.isAdmin && report.user._id.toString() !== req.user.id) {
+    if (req.user.role !== 'admin' && report.user._id.toString() !== req.user.id) {
       return res.status(403).json({ message: 'Access denied' });
     }
 

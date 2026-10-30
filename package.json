@@ -1,7 +1,7 @@
 {
   "name": "looksmatter-backend",
   "version": "1.0.0",
-  "description": "Express + MongoDB backend for Malnad Mart",
+  "description": "Express + MongoDB commerce API for the LOOKSMATTER fashion store",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
