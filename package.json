@@ -1,27 +1,25 @@
 {
   "name": "looksmatter-backend",
-  "version": "1.0.0",
-  "description": "Express + MongoDB commerce API for the LOOKSMATTER fashion store",
-  "main": "src/server.js",
+  "version": "2.0.0",
+  "description": "LOOKSMATTER commerce backend as microservices: API gateway, core service and order service",
+  "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js",
-    "seed": "node src/seed/seed.js"
+  "engines": {
+    "node": ">=22"
   },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "crypto-js": "^4.2.0",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "express-validator": "^7.0.1",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.6.2",
-    "morgan": "^1.10.0",
-    "multer": "^1.4.5-lts.1"
+  "scripts": {
+    "setup": "npm install && npm run install:services",
+    "install:services": "npm ci --prefix gateway && npm ci --prefix services/core-service && npm ci --prefix services/order-service",
+    "dev": "concurrently -k -n gateway,core,orders -c cyan,green,magenta \"npm:dev:gateway\" \"npm:dev:core\" \"npm:dev:orders\"",
+    "dev:gateway": "npm run dev --prefix gateway",
+    "dev:core": "npm run dev --prefix services/core-service",
+    "dev:orders": "npm run dev --prefix services/order-service",
+    "start": "concurrently -k -n gateway,core,orders -c cyan,green,magenta \"npm start --prefix gateway\" \"npm start --prefix services/core-service\" \"npm start --prefix services/order-service\"",
+    "seed": "npm run seed --prefix services/core-service",
+    "migrate:orders": "npm run migrate --prefix services/order-service --",
+    "test:e2e": "node --test tests/e2e.test.mjs"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "concurrently": "^9.2.4"
   }
 }

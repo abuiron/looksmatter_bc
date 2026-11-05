@@ -1,6 +1,6 @@
 ﻿# Dependencies
 node_modules/
-
+docs/
 # Local configuration and secrets
 .env
 .env.*
@@ -26,9 +26,9 @@ dist/
 .cache/
 *.tsbuildinfo
 
-# Runtime uploads and temporary files
-uploads/*
-!uploads/.gitkeep
+# Runtime uploads and temporary files (any service's uploads/ folder)
+**/uploads/*
+!**/uploads/.gitkeep
 tmp/
 temp/
 *.tmp
