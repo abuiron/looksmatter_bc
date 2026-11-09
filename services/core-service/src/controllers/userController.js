@@ -1,5 +1,4 @@
 // src/controllers/userController.js
-import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import Product from '../models/Product.js';
 import { findLiveProducts, isObjectId, resolveCartLines, toQuantity } from '../utils/cart.js';
@@ -19,14 +18,15 @@ export async function updateProfile(req,res){
   if (billingAddress) user.billingAddress=billingAddress;
 
   // Password change flow
-  if (currentPassword || newPassword) {
-    if (!currentPassword || !newPassword) {
+  if (currentPassword !== undefined || newPassword !== undefined) {
+    if (typeof currentPassword !== 'string' || !currentPassword || typeof newPassword !== 'string' || !newPassword) {
       return res.status(400).json({message:'Both currentPassword and newPassword are required'});
     }
-    const ok = await bcrypt.compare(currentPassword, user.password);
+    const ok = await user.matchPassword(currentPassword);
     if (!ok) return res.status(400).json({message:'Current password is incorrect'});
     if (String(newPassword).length < 8) return res.status(400).json({message:'New password must be at least 8 characters'});
-    user.password = await bcrypt.hash(newPassword, 10);
+    if (Buffer.byteLength(newPassword, 'utf8') > 72) return res.status(400).json({message:'Password exceeds the 72-byte limit'});
+    user.password = newPassword; // User.pre('save') hashes it once.
   }
 
   await user.save();
