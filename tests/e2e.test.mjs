@@ -29,11 +29,12 @@ if (!/^mongodb:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(MONGO_URI) && proce
   throw new Error(`Refusing to run e2e tests against ${MONGO_URI}. Use a local MongoDB or set E2E_ALLOW_REMOTE_DB=1.`);
 }
 
+const runId = randomBytes(8).toString('hex');
 const DB = {
-  core: 'looksmatter_e2e_core',
-  orders: 'looksmatter_e2e_orders',
-  monolith: 'looksmatter_e2e_monolith',
-  migrated: 'looksmatter_e2e_migrated',
+  core: 'looksmatter_e2e_core_' + runId,
+  orders: 'looksmatter_e2e_orders_' + runId,
+  monolith: 'looksmatter_e2e_monolith_' + runId,
+  migrated: 'looksmatter_e2e_migrated_' + runId,
 };
 const PORT = { gateway: 5100, core: 5101, orders: 5102, provider: 5199 };
 const GATEWAY = `http://127.0.0.1:${PORT.gateway}`;
@@ -133,13 +134,11 @@ describe('LOOKSMATTER microservices, end to end through the gateway', () => {
   let provider;
 
   before(async () => {
-    rmSync(LOG_DIR, { recursive: true, force: true });
     try {
       await mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 });
     } catch (err) {
       throw new Error(`MongoDB is not reachable at ${MONGO_URI} (${err.message}). Start one with: docker compose up -d mongo`);
     }
-    await dropTestDatabases();
     provider = await startMockPaymentProvider({ port: PORT.provider, ...PROVIDER });
     await startService('core-service', coreEnv, { port: PORT.core });
     await startService('order-service', orderEnv(provider.url), { port: PORT.orders });
@@ -149,7 +148,7 @@ describe('LOOKSMATTER microservices, end to end through the gateway', () => {
   after(async () => {
     await stopAll();
     await provider?.close();
-    await dropTestDatabases().catch(() => {});
+    if (mongoose.connection.readyState === 1) await dropTestDatabases();
     await mongoose.disconnect();
     console.log(`Service logs: ${LOG_DIR}`);
   });
@@ -183,6 +182,18 @@ describe('LOOKSMATTER microservices, end to end through the gateway', () => {
     assert.equal(login.status, 200);
     assert.equal(login.data.user.role, 'admin');
     state.admin = { token: login.data.token };
+  });
+
+  it('only the new password works after changing a password', async () => {
+    const { token, email } = state.ravi;
+    const change = currentPassword => api('PUT', '/api/users/me', {
+      token, body: { currentPassword, newPassword: 'changed-password' },
+    });
+    assert.equal((await change('incorrect')).status, 400);
+    assert.equal((await change('password123')).status, 200);
+    const login = password => api('POST', '/api/auth/login', { body: { email, password } });
+    assert.equal((await login('password123')).status, 401);
+    assert.equal((await login('changed-password')).status, 200);
   });
 
   it('an admin builds the catalogue', async () => {
@@ -330,19 +341,35 @@ describe('LOOKSMATTER microservices, end to end through the gateway', () => {
     });
     const current = async () => (await api('GET', `/api/orders/${state.onlineOrder._id}`, { token: state.asha.token })).data;
 
+    assert.equal((await sendWebhook({ status: 'SUCCESS' })).status, 400);
+    assert.equal((await sendWebhook({ orderId: { $ne: null } })).status, 400);
+    assert.equal((await sendWebhook(event('SUCCESS'))).status, 200);
+    assert.equal((await current()).paymentStatus, 'pending'); // provider still says pending
+    const txn = provider.transactions.get(state.onlineOrder.paymentRefId);
+    const original = { ...txn };
+    txn.status = 'SUCCESS';
+    txn.amount = 1;
+    assert.equal((await sendWebhook(event('SUCCESS'))).status, 503);
+    txn.amount = original.amount;
+    txn.merchantOrderId = 'another-order';
+    assert.equal((await sendWebhook(event('SUCCESS'))).status, 503);
+    assert.equal((await current()).paymentStatus, 'pending');
+    txn.merchantOrderId = original.merchantOrderId;
     assert.equal((await sendWebhook(event('SUCCESS'))).status, 200);
     let order = await current();
     assert.equal(order.paymentStatus, 'paid');
     assert.equal(order.status, 'order confirmed');
-    assert.equal(order.payerVpa, 'asha@upi');
+    assert.equal(order.payerVpa, 'shopper@upi');
 
     await api('PUT', `/api/orders/admin/${order._id}/status`, { token: state.admin.token, body: { status: 'in transit' } });
     await sendWebhook(event('SUCCESS')); // the provider retries
+    txn.status = 'PENDING';
     await sendWebhook(event('TRANSACTION_IN_PROGRESS')); // an older event arrives late
     order = await current();
     assert.equal(order.paymentStatus, 'paid');
     assert.equal(order.status, 'in transit');
 
+    txn.status = 'Cb_Refunded';
     await sendWebhook(event('Cb_Refunded')); // chargeback
     assert.equal((await current()).paymentStatus, 'refunded');
   });

@@ -4,13 +4,13 @@
 // set here (empty when unused), so a developer's real .env file can never leak into a
 // test run: dotenv does not override variables that are already set.
 import { spawn } from 'node:child_process';
-import { createWriteStream, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { createWriteStream, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-export const LOG_DIR = path.join(tmpdir(), 'looksmatter-e2e-logs');
+export const LOG_DIR = mkdtempSync(path.join(tmpdir(), 'looksmatter-e2e-logs-'));
 
 const DIRS = {
   gateway: path.join(ROOT, 'gateway'),
