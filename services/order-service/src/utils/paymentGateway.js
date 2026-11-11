@@ -54,7 +54,6 @@ export function decryptAES(encryptedData, key) {
     );
     return decrypted.toString(CryptoJS.enc.Utf8);
   } catch (error) {
-    console.error('Decryption failed:', error);
     return null;
   }
 }
@@ -101,17 +100,12 @@ export async function initiatePayment(orderData) {
     const encryptedBody = systemEncryption(payload, PaymentGateway_ENCRYPTION_KEY);
     const checksum = getChecksum(encryptedBody, PaymentGateway_ENCRYPTION_KEY);
 
-    console.log('=== PaymentGateway Payment Request ===');
-    console.log('Payload:', JSON.stringify(payload, null, 2));
-    console.log('Encrypted Body:', encryptedBody.substring(0, 100) + '...');
-    console.log('Checksum:', checksum);
-    console.log('API URL:', PaymentGateway_API_URL);
-    console.log('Client ID:', PaymentGateway_CLIENT_ID);
-    console.log('================================');
 
     // Make API call to PaymentGateway
     const response = await fetch(PaymentGateway_API_URL, {
       method: 'POST',
+      signal: AbortSignal.timeout(8000),
+      redirect: 'error',
       headers: {
         'client-id': PaymentGateway_CLIENT_ID,
         'secret-key': PaymentGateway_SECRET_KEY,
@@ -125,16 +119,12 @@ export async function initiatePayment(orderData) {
 
     const responseData = await response.json();
     
-    // Log the response for debugging
-    console.log('PaymentGateway API Response:', JSON.stringify(responseData, null, 2));
-    console.log('Response status:', response.status);
 
     if (!response.ok) {
-      throw new Error(`PaymentGateway API error: ${response.status} - ${JSON.stringify(responseData)}`);
+      throw new Error(`PaymentGateway API error: ${response.status}`);
     }
 
     if (!responseData.data) {
-      console.error('Invalid PaymentGateway response - missing data field:', responseData);
       throw new Error('Invalid response from PaymentGateway');
     }
 
@@ -145,6 +135,11 @@ export async function initiatePayment(orderData) {
     }
 
     const paymentData = JSON.parse(decryptedResponse);
+    if (!paymentData || typeof paymentData.txnRefId !== 'string' || !paymentData.txnRefId ||
+        typeof paymentData.paymentUrl !== 'string' || !paymentData.paymentUrl ||
+        (paymentData.orderId != null && paymentData.orderId !== payload.orderId)) {
+      throw new Error('Invalid payment intent');
+    }
 
     return {
       success: true,
@@ -155,10 +150,9 @@ export async function initiatePayment(orderData) {
       amount: payload.amount
     };
   } catch (error) {
-    console.error('PaymentGateway payment initiation error:', error);
     return {
       success: false,
-      error: error.message
+      error: 'Payment provider request failed'
     };
   }
 }
@@ -185,14 +179,12 @@ export async function checkPaymentStatus(txnRefId, orderData = {}) {
     const encryptedBody = systemEncryption(payload, PaymentGateway_ENCRYPTION_KEY);
     const checksum = getChecksum(encryptedBody, PaymentGateway_ENCRYPTION_KEY);
 
-    console.log('=== PaymentGateway Status Check Request ===');
-    console.log('Payload:', JSON.stringify(payload, null, 2));
-    console.log('Using Status API:', PaymentGateway_STATUS_API_URL);
-    console.log('======================================');
 
     // Make API call to PaymentGateway status check endpoint
     const response = await fetch(PaymentGateway_STATUS_API_URL, {
       method: 'POST',
+      signal: AbortSignal.timeout(8000),
+      redirect: 'error',
       headers: {
         'client-id': PaymentGateway_CLIENT_ID,
         'secret-key': PaymentGateway_SECRET_KEY,
@@ -206,14 +198,12 @@ export async function checkPaymentStatus(txnRefId, orderData = {}) {
 
     const responseData = await response.json();
     
-    console.log('PaymentGateway Status Response:', JSON.stringify(responseData, null, 2));
 
     if (!response.ok || !responseData.data) {
-      console.error('Invalid status check response:', responseData);
       return {
         success: false,
         status: 'pending',
-        error: responseData.message || 'Failed to check payment status'
+        error: 'Failed to check payment status'
       };
     }
 
@@ -224,7 +214,6 @@ export async function checkPaymentStatus(txnRefId, orderData = {}) {
     }
 
     const statusData = JSON.parse(decryptedResponse);
-    console.log('Decrypted Status:', statusData);
 
     // Normalize status (handle cases like Cb_Refunded, Success, etc.)
     const rawStatus = statusData.status;
@@ -247,7 +236,6 @@ export async function checkPaymentStatus(txnRefId, orderData = {}) {
       mappedStatus = 'HOLD';
     }
 
-    console.log('Status Mapping:', rawStatus, '->', mappedStatus);
 
     return {
       success: true,
@@ -260,11 +248,10 @@ export async function checkPaymentStatus(txnRefId, orderData = {}) {
       payerVpa: statusData.payerVpa
     };
   } catch (error) {
-    console.error('Payment status check error:', error);
     return {
       success: false,
       status: 'pending',
-      error: error.message
+      error: 'Payment provider request failed'
     };
   }
 }

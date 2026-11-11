@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import mongoose from 'mongoose';
 import { initiatePayment, checkPaymentStatus, decryptAES, getChecksum } from '../utils/paymentGateway.js';
 import { applyProviderStatus } from '../utils/paymentStatus.js';
@@ -70,8 +71,7 @@ export async function initiatePaymentGatewayPayment(req, res) {
   } catch (error) {
     console.error('Payment initiation error:', error);
     res.status(500).json({
-      message: 'Failed to initiate payment',
-      error: error.message
+      message: 'Failed to initiate payment'
     });
   }
 }
@@ -101,31 +101,11 @@ export async function getPaymentStatus(req, res) {
       return res.status(409).json({ message: 'No payment has been started for this order' });
     }
 
-    const statusData = await checkPaymentStatus(order.paymentRefId, {
-      ...orderData, // name, email, phone and IP as the shopper's browser sent them
-      PaymentGatewayOrderId: order.PaymentGatewayOrderId,
-      orderId: String(order._id),
-      amount: order.total,
-      userId: req.user.id,
-    });
-
-    if (statusData.success) {
-      applyProviderStatus(
-        order,
-        statusData.status,
-        { txnRefId: statusData.txnRefId, gatewayOrderId: statusData.orderId, payerVpa: statusData.payerVpa },
-        `status check ${req.id}`
-      );
-      await order.save();
-    }
-
+    const statusData = await verifyAndRecord(order, req.id);
     res.json(statusData);
   } catch (error) {
     console.error('Payment status check error:', error);
-    res.status(500).json({
-      message: 'Failed to check payment status',
-      error: error.message
-    });
+    res.status(503).json({ message: 'Payment status could not be verified. Try again shortly.' });
   }
 }
 
@@ -134,75 +114,61 @@ export async function getPaymentStatus(req, res) {
  * Handle PaymentGateway webhook for payment status updates
  */
 export async function PaymentGatewayWebhook(req, res) {
-  try {
-    console.log('=== PaymentGateway Webhook Received ===');
-
-    // PaymentGateway sends 'encryptedData' (without checksum in webhook)
-    const encryptedBody = req.body.encryptedData || req.body.encryptedBody;
-
-    if (!encryptedBody) {
-      console.error('Missing encryptedData/encryptedBody in webhook');
-      return res.status(400).json({ message: 'Invalid webhook payload' });
+  const encrypted = req.body?.encryptedData || req.body?.encryptedBody;
+  const key = process.env.PaymentGateway_ENCRYPTION_KEY;
+  if (!key) return res.status(503).json({ message: 'Payments are unavailable' });
+  if (typeof encrypted !== 'string' || !encrypted) return res.status(400).json({ message: 'Invalid webhook payload' });
+  if (req.body.checksum !== undefined) {
+    const sum = req.body.checksum;
+    if (typeof sum !== 'string' || !/^[a-f0-9]{64}$/i.test(sum) ||
+        !timingSafeEqual(Buffer.from(sum, 'hex'), Buffer.from(getChecksum(encrypted, key), 'hex'))) {
+      return res.status(400).json({ message: 'Invalid checksum' });
     }
-
-    // PaymentGateway webhook doesn't include checksum, only encryptedData
-    // Verify checksum only if provided (for payment initiation responses)
-    if (req.body.checksum) {
-      const calculatedChecksum = getChecksum(encryptedBody, process.env.PaymentGateway_ENCRYPTION_KEY);
-      if (req.body.checksum !== calculatedChecksum) {
-        console.error('Checksum mismatch:', { received: req.body.checksum, calculated: calculatedChecksum });
-        return res.status(400).json({ message: 'Invalid checksum' });
-      }
-      console.log('Checksum verified ✓');
-    } else {
-      console.log('No checksum in webhook (expected for PaymentGateway callbacks)');
-    }
-
-    // Decrypt the webhook data
-    const decryptedData = decryptAES(encryptedBody, process.env.PaymentGateway_ENCRYPTION_KEY);
-    if (!decryptedData) {
-      console.error('Failed to decrypt webhook data');
-      return res.status(400).json({ message: 'Failed to decrypt webhook data' });
-    }
-
-    const webhookData = JSON.parse(decryptedData);
-    console.log('Decrypted Webhook Data:', JSON.stringify(webhookData, null, 2));
-
-    // PaymentGateway uses different field names: transactionRefId instead of txnRefId
-    const txnRefId = webhookData.transactionRefId || webhookData.txnRefId;
-
-    // Find order by PaymentGateway order ID (merchant transaction ID with 'ssai' prefix)
-    let order = await Order.findOne({ PaymentGatewayOrderId: webhookData.orderId });
-
-    // Fallback: try finding by txnRefId if not found by PaymentGatewayOrderId
-    if (!order && txnRefId) {
-      order = await Order.findOne({ paymentRefId: txnRefId });
-    }
-
-    if (!order) {
-      console.error('Order not found for PaymentGateway orderId:', webhookData.orderId, 'txnRefId:', txnRefId);
-      // Still return 200 to prevent PaymentGateway retries
-      return res.json({ message: 'Order not found', orderId: webhookData.orderId });
-    }
-
-    // Repeated and out-of-order webhooks are expected; applyProviderStatus only makes
-    // changes that are valid from the order's current payment status.
-    applyProviderStatus(
-      order,
-      webhookData.status,
-      { txnRefId, gatewayOrderId: webhookData.orderId, payerVpa: webhookData.payerVpa },
-      `webhook ${req.id}`
-    );
-    await order.save();
-
-    res.json({
-      message: 'Webhook processed successfully',
-      orderId: order._id,
-      status: order.paymentStatus
-    });
-  } catch (error) {
-    console.error('Webhook processing error:', error);
-    // Still return 200 to prevent PaymentGateway retries
-    res.json({ message: 'Webhook received but failed to process', error: error.message });
   }
+
+  let event;
+  try { event = JSON.parse(decryptAES(encrypted, key)); } catch { /* invalid callback */ }
+  const merchant = event?.orderId;
+  const txn = event?.transactionRefId ?? event?.txnRefId;
+  const validId = (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 256;
+  if ((!merchant && !txn) || (merchant !== undefined && !validId(merchant)) ||
+      (txn !== undefined && !validId(txn))) {
+    return res.status(400).json({ message: 'Invalid payment references' });
+  }
+  try {
+    const order = await Order.findOne({
+      ...(merchant && { PaymentGatewayOrderId: merchant }), ...(txn && { paymentRefId: txn }),
+    });
+    if (!order) return res.status(200).json({ message: 'Unknown transaction' });
+    await verifyAndRecord(order, req.id);
+    return res.json({ message: 'Webhook processed successfully', orderId: order._id, status: order.paymentStatus });
+  } catch {
+    console.warn(`[${req.id}] Payment callback could not be verified or recorded`);
+    return res.status(503).json({ message: 'Payment verification unavailable' });
+  }
+}
+
+// Callbacks can be unsigned. Treat them only as a prompt to check the stored transaction.
+async function verifyAndRecord(order, requestId) {
+  if (!order.paymentRefId || !order.PaymentGatewayOrderId) throw new Error('Missing transaction');
+  const result = await checkPaymentStatus(order.paymentRefId, {
+    PaymentGatewayOrderId: order.PaymentGatewayOrderId, amount: Math.round(order.total * 100) / 100,
+    userId: String(order.user), firstName: order.shippingAddress?.firstName,
+    lastName: order.shippingAddress?.lastName, email: order.customer?.email, phone: order.shippingAddress?.phone,
+  });
+  const amount = result.amount;
+  const validAmount = (typeof amount === 'number' || typeof amount === 'string') &&
+    /^\d+(?:\.\d{1,2})?$/.test(String(amount)) && Number(amount) > 0;
+  if (!result.success || result.txnRefId !== order.paymentRefId || result.orderId !== order.PaymentGatewayOrderId ||
+      !validAmount || Math.round(Number(amount) * 100) !== Math.round(order.total * 100)) {
+    throw new Error('Provider response did not match the order');
+  }
+  const previous = { status: order.status, paymentStatus: order.paymentStatus,
+    paymentRefId: order.paymentRefId, PaymentGatewayOrderId: order.PaymentGatewayOrderId };
+  applyProviderStatus(order, result.status, { payerVpa: result.payerVpa }, requestId);
+  if (order.isModified()) {
+    order.$where = previous; // A concurrent fulfilment/payment change must not be overwritten.
+    await order.save();
+  }
+  return result;
 }

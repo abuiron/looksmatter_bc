@@ -264,6 +264,7 @@ export async function cancelOrder(req, res) {
     }
 
     // Update order status to cancelled
+    order.$where = { paymentStatus: 'pending' }; // Do not overwrite a concurrently confirmed payment.
     order.status = 'cancelled';
     order.paymentStatus = 'failed'; // Mark payment as failed since order is cancelled
     await order.save();
@@ -275,6 +276,7 @@ export async function cancelOrder(req, res) {
       order
     });
   } catch (err) {
+    if (err.name === 'DocumentNotFoundError') return res.status(409).json({ message: 'Order changed; refresh before cancelling.' });
     console.error('cancelOrder error:', err);
     res.status(500).json({ message: 'Failed to cancel order' });
   }
