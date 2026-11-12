@@ -16,7 +16,7 @@ services:
     image: mongo:7.0
     restart: unless-stopped
     ports:
-      - "27017:27017" # published only so you can use mongosh, the seed and the migration locally
+      - "127.0.0.1:27017:27017" # published only so you can use mongosh, the seed and the migration locally
     volumes:
       - mongo-data:/data/db
     healthcheck:
