@@ -1,4 +1,4 @@
-﻿# LOOKSMATTER — Commerce Backend
+# LOOKSMATTER — Commerce Backend
 
 **The backend of a full-stack fashion e-commerce platform, built as microservices: an API gateway, a core service (accounts, catalog, carts, support) and an order service (checkout, order lifecycle, UPI payments), each with its own database.**
 
@@ -60,7 +60,7 @@ The backend is the source of truth. The browser can show prices and cart preview
 | **Fault isolation** | When order-service is down, the catalog, carts and support desk keep working (tested) | One failing service doesn't take down the store |
 | **Safe data migration** | Dry run by default, insert-only, re-runnable, self-verifying | Existing orders move to the new database with a rollback path |
 | **Containers** | Dockerfiles per service, non-root, health checks; Compose publishes only the gateway | The whole system starts with one command, isolated the way production should be |
-| **End-to-end tests** | 20 journeys through the gateway against real services and a mock UPI provider | Covers checkout, payments, outages and the migration |
+| **End-to-end tests** | 21 journeys through the gateway against real services and a mock UPI provider | Covers checkout, payments, outages and the migration |
 
 ### Commerce
 
@@ -380,9 +380,10 @@ sequenceDiagram
 
     par Provider webhook
         PSP->>API: POST /api/payment/webhook {encryptedData}
-        API->>API: verify checksum (if sent) · decrypt · map status
+        API->>API: verify checksum if sent and decrypt references
+        API->>PSP: query stored transaction and verify both ids and amount
         API->>DB: apply only if the move is valid (state machine)
-        API-->>PSP: 200 (always, so the provider doesn't retry forever)
+        API-->>PSP: 200 on success; 503 if verification fails
     and Client polling
         loop every 5 s while the payment modal is open
             UI->>API: GET /api/orders/:id
@@ -397,6 +398,8 @@ sequenceDiagram
 ```
 
 **Integrity rules** enforced by order-service:
+
+- A callback triggers a server-to-server status lookup. Its status and payer fields are never trusted. Both transaction identifiers and the amount must match the stored order before it can change. Verification failures leave the order unchanged and return 503; malformed callbacks return 400. Provider requests time out after eight seconds and do not follow redirects.
 
 - The amount sent to the provider is always the stored `order.total`. Any `amount` in the request is ignored.
 - Payments can only be started and checked for the shopper's **own** order; another user's order id gives `404`.
@@ -810,7 +813,7 @@ looksmatter-backend/
 │       │   └── utils/                # paymentGateway (AES/HMAC adapter) · paymentStatus (state machine)
 │       └── scripts/migrate-orders.js # one-time move of monolith orders
 ├── tests/
-│   ├── e2e.test.mjs                  # 20 end-to-end journeys through the gateway
+│   ├── e2e.test.mjs                  # 21 end-to-end journeys through the gateway
 │   └── support/                      # service runner · mock UPI provider · provider crypto
 ├── docs/MICROSERVICES.md             # the microservices guide
 ├── docker-compose.yml
@@ -826,7 +829,7 @@ docker compose up -d mongo     # or any MongoDB on 127.0.0.1:27017
 npm run test:e2e
 ```
 
-The suite (`node:test`, no extra dependencies) starts all three services and a mock UPI provider that speaks the real encrypted protocol, then runs 20 journeys through the gateway:
+The suite (`node:test`, no extra dependencies) starts all three services and a mock UPI provider that speaks the real encrypted protocol, then runs 21 journeys through the gateway:
 
 - **Shopping:** sign-up, catalog, image upload streamed through the gateway, checkout with server-side totals, removal of only the ordered lines, vanished products (`409`), empty bag (`400`)
 - **Admin:** customer snapshot on the order list, customer statistics through the original URL, role checks
